@@ -1,8 +1,6 @@
 # fly.toml (mira-python-plot)
-from flask import Flask, request, jsonify
-
-app = "mira-python-plot"      # o el nombre que te sugiera Fly
-primary_region = "scl"        # "scl" (Santiago) o el que prefieras
+app = "mira-python-plot"
+primary_region = "scl"
 
 [build]
   dockerfile = "Dockerfile"
@@ -28,7 +26,3 @@ primary_region = "scl"        # "scl" (Santiago) o el que prefieras
   method = "get"
   path = "/healthz"
   protocol = "http"
-
-@app.get("/healthz")
-def healthz():
-    return jsonify({"ok": True}), 200
