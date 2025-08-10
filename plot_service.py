@@ -1,22 +1,51 @@
-from flask import Flask, request, jsonify
-import matplotlib.pyplot as plt
+# -*- coding: utf-8 -*-
+import os
+import io
+import re
+import base64
 import numpy as np
 import sympy as sp
-import pandas as pd
-from utils import image_to_base64
-from io import BytesIO
-import base64  # <-- necesario
+
+# usar backend sin X para servidores
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app, origins=os.getenv("ALLOWED_ORIGINS", "*").split(","))
 
-@app.route('/plot', methods=['POST'])
+
+def _fig_to_data_url():
+    """Convierte la figura actual de matplotlib a data URL base64."""
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png", dpi=160)
+    plt.close()
+    buf.seek(0)
+    return "data:image/png;base64," + base64.b64encode(buf.read()).decode()
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/plot", methods=["POST"])
 def plot():
-    data = request.get_json()
-    prompt = data.get('prompt', '').lower()
-    x = np.linspace(-10, 10, 300)
+    """
+    Body: { "prompt": "Grafica y = x**2" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    prompt = (data.get("prompt") or "").lower()
+
+    x = np.linspace(-10, 10, 600)
     y = np.sin(x)
-    title = "Gráfico de y = sin(x)"
-    explanation = "Ejemplo. Pide otra función: 'Grafica y = x^2'."
+    title = "y = sin(x)"
+    explanation = "Ejemplo. Pide otra función: 'Grafica y = x**2'."
+
     try:
         if "x^2" in prompt or "x²" in prompt:
             y = x ** 2
@@ -31,128 +60,136 @@ def plot():
             title = "y = exp(x)"
             explanation = "Función exponencial."
         elif "log" in prompt:
-            y = np.log(x[x > 0])
-            x = x[x > 0]
+            mask = x > 0
+            y = np.log(x[mask])
+            x = x[mask]
             title = "y = log(x)"
             explanation = "Función logaritmo natural."
         elif "tan" in prompt:
             y = np.tan(x)
             title = "y = tan(x)"
             explanation = "Función tangente."
-        # ¡Ahora más inteligencia con sympy!
-        elif "y =" in prompt or "grafic" in prompt:
-            eq = prompt.split('y =')[-1].strip()
-            x_sp = sp.symbols('x')
-            y_sp = sp.lambdify(x_sp, sp.sympify(eq))
+        elif "y =" in prompt or "grafic" in prompt or "grafica" in prompt or "gráfico" in prompt:
+            # intenta extraer la parte 'y = ...'
+            m = re.search(r"y\s*=\s*(.+)$", prompt)
+            eq = m.group(1).strip() if m else prompt.split("y =")[-1].strip()
+            x_sp = sp.symbols("x")
+            y_sp = sp.lambdify(x_sp, sp.sympify(eq), modules="numpy")
             y = y_sp(x)
             title = f"y = {eq}"
             explanation = f"Gráfico automático de y = {eq}"
-        plt.figure(figsize=(5, 3))
+
+        plt.figure(figsize=(6, 3.6))
         plt.plot(x, y)
         plt.title(title)
         plt.xlabel("x")
         plt.ylabel("y")
         plt.grid(True)
-        buf = BytesIO()
-        plt.tight_layout()
-        plt.savefig(buf, format='png')
-        plt.close()
-        buf.seek(0)
-        img_b64 = "data:image/png;base64," + base64.b64encode(buf.read()).decode()
-    except Exception as e:
-        img_b64 = ""
-        explanation = f"Error: {str(e)}"
-    return jsonify({"url": img_b64, "explanation": explanation})
 
-@app.route('/histogram', methods=['POST'])
+        img_b64 = _fig_to_data_url()
+        return jsonify({"url": img_b64, "explanation": explanation})
+    except Exception as e:
+        return jsonify({"url": "", "explanation": f"Error: {str(e)}"}), 400
+
+
+@app.route("/histogram", methods=["POST"])
 def histogram():
-    data = request.get_json()
-    values = data.get('values', [])
+    """
+    Body: { "values": [1,2,3] }  ó  { "text": "1, 2, 3, 4" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    values = data.get("values", [])
+
     if not values:
-        text = data.get('text', '')
+        text = data.get("text", "")
         try:
-            # Buscar números en texto
-            import re
             values = list(map(float, re.findall(r"[-+]?\d*\.\d+|\d+", text)))
-        except:
-            return jsonify({"url": "", "explanation": "No se pudo extraer datos."})
+        except Exception:
+            return jsonify({"url": "", "explanation": "No se pudo extraer datos."}), 400
+
     try:
-        plt.figure(figsize=(5, 3))
-        plt.hist(values, bins='auto', color="#8e24aa", edgecolor="#fff")
+        plt.figure(figsize=(6, 3.6))
+        plt.hist(values, bins="auto")
         plt.title("Histograma de datos")
         plt.xlabel("Valor")
         plt.ylabel("Frecuencia")
         plt.grid(True)
-        buf = BytesIO()
-        plt.tight_layout()
-        plt.savefig(buf, format='png')
-        plt.close()
-        buf.seek(0)
-        img_b64 = "data:image/png;base64," + base64.b64encode(buf.read()).decode()
-        explanation = "Histograma generado."
-    except Exception as e:
-        img_b64 = ""
-        explanation = f"Error: {str(e)}"
-    return jsonify({"url": img_b64, "explanation": explanation})
 
-@app.route('/bars', methods=['POST'])
+        img_b64 = _fig_to_data_url()
+        return jsonify({"url": img_b64, "explanation": "Histograma generado."})
+    except Exception as e:
+        return jsonify({"url": "", "explanation": f"Error: {str(e)}"}), 400
+
+
+@app.route("/bars", methods=["POST"])
 def bars():
-    data = request.get_json()
-    values = data.get('values', [])
-    labels = data.get('labels', [])
+    """
+    Body: { "labels": ["A","B"], "values": [10,20] }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    labels = data.get("labels", [])
+    values = data.get("values", [])
+
     if not values:
-        return jsonify({"url": "", "explanation": "Debes enviar los valores."})
+        return jsonify({"url": "", "explanation": "Debes enviar los valores."}), 400
+
     try:
-        plt.figure(figsize=(5, 3))
-        plt.bar(labels if labels else range(len(values)), values, color="#1976d2")
+        plt.figure(figsize=(6, 3.6))
+        plt.bar(labels if labels else range(len(values)), values)
         plt.title("Gráfico de barras")
-        plt.tight_layout()
-        buf = BytesIO()
-        plt.savefig(buf, format='png')
-        plt.close()
-        buf.seek(0)
-        img_b64 = "data:image/png;base64," + base64.b64encode(buf.read()).decode()
-        explanation = "Gráfico de barras generado."
-    except Exception as e:
-        img_b64 = ""
-        explanation = f"Error: {str(e)}"
-    return jsonify({"url": img_b64, "explanation": explanation})
 
-@app.route('/pie', methods=['POST'])
+        img_b64 = _fig_to_data_url()
+        return jsonify({"url": img_b64, "explanation": "Gráfico de barras generado."})
+    except Exception as e:
+        return jsonify({"url": "", "explanation": f"Error: {str(e)}"}), 400
+
+
+@app.route("/pie", methods=["POST"])
 def pie():
-    data = request.get_json()
-    values = data.get('values', [])
-    labels = data.get('labels', [])
-    if not values:
-        return jsonify({"url": "", "explanation": "Debes enviar los valores."})
-    try:
-        plt.figure(figsize=(5, 3))
-        plt.pie(values, labels=labels, autopct='%1.1f%%', startangle=140)
-        plt.title("Gráfico de torta (pie chart)")
-        plt.tight_layout()
-        buf = BytesIO()
-        plt.savefig(buf, format='png')
-        plt.close()
-        buf.seek(0)
-        img_b64 = "data:image/png;base64," + base64.b64encode(buf.read()).decode()
-        explanation = "Gráfico de torta generado."
-    except Exception as e:
-        img_b64 = ""
-        explanation = f"Error: {str(e)}"
-    return jsonify({"url": img_b64, "explanation": explanation})
+    """
+    Body: { "labels": ["A","B"], "values": [60,40] }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    labels = data.get("labels", [])
+    values = data.get("values", [])
 
-@app.route('/solve', methods=['POST'])
-def solve_equation():
-    data = request.get_json()
-    eq_str = data.get('equation', '')
+    if not values:
+        return jsonify({"url": "", "explanation": "Debes enviar los valores."}), 400
+
     try:
-        x = sp.symbols('x')
-        eq = sp.sympify(eq_str)
-        solutions = sp.solve(eq, x)
-        explanation = f"La(s) solución(es) de {eq_str} son: {solutions}"
+        plt.figure(figsize=(6, 3.6))
+        plt.pie(values, labels=labels if labels else None, autopct="%1.1f%%", startangle=140)
+        plt.title("Gráfico de torta")
+
+        img_b64 = _fig_to_data_url()
+        return jsonify({"url": img_b64, "explanation": "Gráfico de torta generado."})
     except Exception as e:
-        explanation = f"No se pudo resolver: {str(e)}"
-    return jsonify({"solution": explanation})
+        return jsonify({"url": "", "explanation": f"Error: {str(e)}"}), 400
+
+
+@app.route("/solve", methods=["POST"])
+def solve_equation():
+    """
+    Body: { "equation": "x**2 - 4" }
+    Resuelve para x la ecuación x**2 - 4 = 0
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    eq_str = (data.get("equation") or "").strip()
+    if not eq_str:
+        return jsonify({"error": "Debes enviar 'equation'."}), 400
+
+    try:
+        x = sp.symbols("x")
+        eq = sp.sympify(eq_str)
+        solutions = sp.solve(sp.Eq(eq, 0), x)
+        return jsonify({
+            "solution": [str(s) for s in solutions],
+            "explanation": f"Soluciones de {eq_str} = 0: {solutions}"
+        })
+    except Exception as e:
+        return jsonify({"solution": [], "explanation": f"No se pudo resolver: {str(e)}"}), 400
+
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True)
